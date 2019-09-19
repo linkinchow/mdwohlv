@@ -1,0 +1,271 @@
+{
+	"name": "Incremental_Copy_CloudStreaming",
+	"properties": {
+		"activities": [
+			{
+				"name": "ForEach_u33",
+				"type": "ForEach",
+				"dependsOn": [],
+				"userProperties": [],
+				"typeProperties": {
+					"items": {
+						"value": "@pipeline().parameters.cw_items",
+						"type": "Expression"
+					},
+					"activities": [
+						{
+							"name": "Copy_u33",
+							"type": "Copy",
+							"dependsOn": [
+								{
+									"activity": "LookupOldWaterMark",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								},
+								{
+									"activity": "LookupNewWaterMark",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [
+								{
+									"name": "Source",
+									"value": "dbo.@{item().source.table}"
+								},
+								{
+									"name": "Destination",
+									"value": "southridge/@{pipeline().parameters.adls_path}/@{item().destination.fileName}"
+								}
+							],
+							"typeProperties": {
+								"source": {
+									"type": "AzureSqlSource",
+									"sqlReaderQuery": {
+										"value": "select * from @{item().source.table} where UpdatedDate > '@{activity('LookupOldWaterMark').output.firstRow.WatermarkValue}' and UpdatedDate <= '@{activity('LookupNewWaterMark').output.firstRow.NewWatermarkvalue}'",
+										"type": "Expression"
+									}
+								},
+								"sink": {
+									"type": "DelimitedTextSink",
+									"storeSettings": {
+										"type": "AzureBlobFSWriteSettings"
+									},
+									"formatSettings": {
+										"type": "DelimitedTextWriteSettings",
+										"quoteAllText": true,
+										"fileExtension": ".txt"
+									}
+								},
+								"enableStaging": false
+							},
+							"inputs": [
+								{
+									"referenceName": "SourceDataset_u33",
+									"type": "DatasetReference",
+									"parameters": {
+										"cw_table": "@item().source.table"
+									}
+								}
+							],
+							"outputs": [
+								{
+									"referenceName": "DestinationDataset_u33",
+									"type": "DatasetReference",
+									"parameters": {
+										"cw_fileName": "@item().destination.fileName",
+										"adls_path": "@pipeline().parameters.adls_path"
+									}
+								}
+							]
+						},
+						{
+							"name": "LookupOldWaterMark",
+							"type": "Lookup",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "AzureSqlSource",
+									"sqlReaderQuery": {
+										"value": "select WatermarkValue from watermarktable where TableName = '@{item().source.table}'",
+										"type": "Expression"
+									}
+								},
+								"dataset": {
+									"referenceName": "SourceDataset_u33",
+									"type": "DatasetReference",
+									"parameters": {
+										"cw_table": "watermarktable"
+									}
+								}
+							}
+						},
+						{
+							"name": "LookupNewWaterMark",
+							"type": "Lookup",
+							"dependsOn": [],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"source": {
+									"type": "AzureSqlSource",
+									"sqlReaderQuery": {
+										"value": "select MAX(UpdatedDate) as NewWatermarkvalue from @{item().source.table}",
+										"type": "Expression"
+									}
+								},
+								"dataset": {
+									"referenceName": "SourceDataset_u33",
+									"type": "DatasetReference",
+									"parameters": {
+										"cw_table": "@item().source.table"
+									}
+								}
+							}
+						},
+						{
+							"name": "StoredProceduretoWriteWatermark",
+							"type": "SqlServerStoredProcedure",
+							"dependsOn": [
+								{
+									"activity": "Copy_u33",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"storedProcedureName": "[dbo].[usp_write_watermark]",
+								"storedProcedureParameters": {
+									"LastModifiedDate": {
+										"value": {
+											"value": "@{activity('LookupNewWaterMark').output.firstRow.NewWatermarkvalue}",
+											"type": "Expression"
+										},
+										"type": "Date"
+									},
+									"TableName": {
+										"value": {
+											"value": "@{item().source.table}",
+											"type": "Expression"
+										},
+										"type": "String"
+									}
+								}
+							},
+							"linkedServiceName": {
+								"referenceName": "SQLDB_CloudStreaming",
+								"type": "LinkedServiceReference"
+							}
+						},
+						{
+							"name": "Ingest",
+							"type": "DatabricksNotebook",
+							"dependsOn": [
+								{
+									"activity": "StoredProceduretoWriteWatermark",
+									"dependencyConditions": [
+										"Succeeded"
+									]
+								}
+							],
+							"policy": {
+								"timeout": "7.00:00:00",
+								"retry": 0,
+								"retryIntervalInSeconds": 30,
+								"secureOutput": false,
+								"secureInput": false
+							},
+							"userProperties": [],
+							"typeProperties": {
+								"notebookPath": "/Shared/ETL-DDL/Incremental/CloudStreaming",
+								"baseParameters": {
+									"adls_path": {
+										"value": "@pipeline().parameters.adls_path",
+										"type": "Expression"
+									},
+									"cw_fileName": {
+										"value": "@item().destination.fileName",
+										"type": "Expression"
+									}
+								}
+							},
+							"linkedServiceName": {
+								"referenceName": "AzureDatabricks",
+								"type": "LinkedServiceReference"
+							}
+						}
+					]
+				}
+			}
+		],
+		"parameters": {
+			"cw_items": {
+				"type": "Array",
+				"defaultValue": [
+					{
+						"source": {
+							"table": "Addresses"
+						},
+						"destination": {
+							"fileName": "Addresses.csv"
+						}
+					},
+					{
+						"source": {
+							"table": "Customers"
+						},
+						"destination": {
+							"fileName": "Customers.csv"
+						}
+					},
+					{
+						"source": {
+							"table": "Transactions"
+						},
+						"destination": {
+							"fileName": "Transactions.csv"
+						}
+					}
+				]
+			},
+			"adls_path": {
+				"type": "string",
+				"defaultValue": "southridge/cloudstreaming/2018/01/01"
+			}
+		},
+		"annotations": []
+	},
+	"type": "Microsoft.DataFactory/factories/pipelines"
+}
